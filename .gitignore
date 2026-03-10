@@ -51,3 +51,10 @@ MANIFEST
 
 # uv
 .python-version
+
+# Local tooling / agent state
+.claude/
+.claude-mpm/
+.mcp.json
+BUILD_NUMBER
+docs/research/
