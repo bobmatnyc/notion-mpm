@@ -4,29 +4,32 @@
 # Automates development, testing, and publishing workflows
 #
 # Quick start:
-#   make help          - Show this help
-#   make install       - Install package in dev mode
-#   make test          - Run pytest
-#   make build         - Build wheel and sdist
-#   make publish       - Bump patch + build + publish to PyPI + GitHub Release
+#   make help           - Show this help
+#   make install        - Install package in dev mode (uv sync)
+#   make test           - Run pytest (unit tests)
+#   make check          - lint + type-check + test (full quality gate)
+#   make build          - Build wheel and sdist
 #
 # Version & Release:
-#   make version       - Show current version
-#   make bump-patch    - Bump patch version (0.1.1 -> 0.1.2)
-#   make bump-minor    - Bump minor version (0.1.1 -> 0.2.0)
-#   make bump-major    - Bump major version (0.1.1 -> 1.0.0)
-#   make publish       - Full patch release: bump + build + PyPI + GitHub
-#   make publish-minor - Full minor release
-#   make publish-major - Full major release
-#   make publish-only  - Publish current version to PyPI (no bump)
+#   make version        - Show current version
+#   make bump-patch     - Bump patch version (0.1.0 -> 0.1.1)
+#   make bump-minor     - Bump minor version (0.1.0 -> 0.2.0)
+#   make bump-major     - Bump major version (0.1.0 -> 1.0.0)
+#   make publish        - Patch bump + check + build + PyPI + GitHub + tag + push
+#   make publish-minor  - Minor bump + full release
+#   make publish-major  - Major bump + full release
+#   make publish-only   - Publish current version to PyPI (no bump)
 
 # ============================================================================
 # PHONY Target Declarations
 # ============================================================================
-.PHONY: help install install-dev test lint format type-check clean build
-.PHONY: publish publish-minor publish-major publish-only pre-publish
+.PHONY: help install install-dev sync
+.PHONY: test test-cov test-live
+.PHONY: lint format type-check check
+.PHONY: clean build
 .PHONY: version bump-patch bump-minor bump-major sync-versions
 .PHONY: tag push push-tags
+.PHONY: publish publish-minor publish-major publish-only pre-publish
 
 # ============================================================================
 # Shell Configuration (Strict Mode)
@@ -39,16 +42,19 @@ MAKEFLAGS += --no-builtin-rules
 # ============================================================================
 # Configuration Variables
 # ============================================================================
-BLUE  := \033[0;34m
-GREEN := \033[0;32m
+BLUE   := \033[0;34m
+GREEN  := \033[0;32m
 YELLOW := \033[0;33m
-RED   := \033[0;31m
-NC    := \033[0m
+RED    := \033[0;31m
+NC     := \033[0m
 
-BUILD_DIR := build
-DIST_DIR  := dist
-PYTHON    := uv run python
-PACKAGE   := notion_mpm
+BUILD_DIR  := build
+DIST_DIR   := dist
+PYTHON     := uv run python
+PKG        := notion_mpm
+PKG_SRC    := src/$(PKG)
+VERSION_PY := $(PKG_SRC)/__version__.py
+VERSION_F  := VERSION
 
 all: help
 
@@ -62,348 +68,416 @@ help: ## Show this help message
 	@echo ""
 	@echo "Usage: make [target]"
 	@echo ""
-	@echo "$(BLUE)Version Management:$(NC)"
-	@echo "  $(GREEN)make version$(NC)        - Show current version"
-	@echo "  $(GREEN)make bump-patch$(NC)     - Bump patch version (x.y.Z+1)"
-	@echo "  $(GREEN)make bump-minor$(NC)     - Bump minor version (x.Y+1.0)"
-	@echo "  $(GREEN)make bump-major$(NC)     - Bump major version (X+1.0.0)"
-	@echo ""
-	@echo "$(BLUE)Publishing:$(NC)"
-	@echo "  $(GREEN)make publish$(NC)        - Patch bump + build + PyPI + GitHub Release"
-	@echo "  $(GREEN)make publish-minor$(NC)  - Minor bump + build + PyPI + GitHub Release"
-	@echo "  $(GREEN)make publish-major$(NC)  - Major bump + build + PyPI + GitHub Release"
-	@echo "  $(GREEN)make publish-only$(NC)   - Publish current version to PyPI (no bump)"
-	@echo ""
-	@echo "$(BLUE)Git Operations:$(NC)"
-	@echo "  $(GREEN)make tag$(NC)            - Create git tag for current version"
-	@echo "  $(GREEN)make push$(NC)           - Push commits to origin"
-	@echo "  $(GREEN)make push-tags$(NC)      - Push tags to origin"
-	@echo ""
 	@echo "$(BLUE)Development:$(NC)"
-	@echo "  $(GREEN)make install$(NC)        - Install package in dev mode"
-	@echo "  $(GREEN)make test$(NC)           - Run pytest"
+	@echo "  $(GREEN)make install$(NC)        - Install package in dev mode (uv sync)"
+	@echo "  $(GREEN)make test$(NC)           - Run pytest (unit tests)"
+	@echo "  $(GREEN)make test-cov$(NC)       - Run pytest with HTML coverage report"
+	@echo "  $(GREEN)make test-live$(NC)      - Run live Notion API integration tests"
 	@echo "  $(GREEN)make lint$(NC)           - Run ruff linter"
 	@echo "  $(GREEN)make format$(NC)         - Format code with ruff"
-	@echo "  $(GREEN)make type-check$(NC)     - Run mypy type checker"
-	@echo "  $(GREEN)make build$(NC)          - Build wheel and sdist"
-	@echo "  $(GREEN)make clean$(NC)          - Remove build artifacts"
+	@echo "  $(GREEN)make type-check$(NC)     - Run mypy (strict)"
+	@echo "  $(GREEN)make check$(NC)          - All quality gates: lint + type-check + test"
+	@echo "  $(GREEN)make clean$(NC)          - Remove build artifacts and caches"
 	@echo ""
-	@echo "$(BLUE)Version:$(NC) $$(cat VERSION 2>/dev/null || echo 'unknown')"
+	@echo "$(BLUE)Version Management:$(NC)"
+	@echo "  $(GREEN)make version$(NC)        - Show current version"
+	@echo "  $(GREEN)make bump-patch$(NC)     - Bump patch version (x.y.Z → x.y.Z+1)"
+	@echo "  $(GREEN)make bump-minor$(NC)     - Bump minor version (x.Y.z → x.Y+1.0)"
+	@echo "  $(GREEN)make bump-major$(NC)     - Bump major version (X.y.z → X+1.0.0)"
+	@echo "  $(GREEN)make sync-versions$(NC)  - Sync VERSION → pyproject.toml + __version__.py"
+	@echo ""
+	@echo "$(BLUE)Publishing:$(NC)"
+	@echo "  $(GREEN)make publish$(NC)        - Patch bump + check + PyPI + GitHub Release"
+	@echo "  $(GREEN)make publish-minor$(NC)  - Minor bump + full release"
+	@echo "  $(GREEN)make publish-major$(NC)  - Major bump + full release"
+	@echo "  $(GREEN)make publish-only$(NC)   - Publish current version to PyPI (no bump)"
+	@echo "  $(GREEN)make pre-publish$(NC)    - Run quality gate + token check (dry-run)"
+	@echo ""
+	@echo "$(BLUE)Git:$(NC)"
+	@echo "  $(GREEN)make tag$(NC)            - Create annotated git tag for current version"
+	@echo "  $(GREEN)make push$(NC)           - Push commits to origin"
+	@echo "  $(GREEN)make push-tags$(NC)      - Push all tags to origin"
+	@echo ""
+	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | \
+		awk 'BEGIN {FS = ":.*?## "}; {printf "  $(GREEN)%-18s$(NC) %s\n", $$1, $$2}'
+	@echo ""
+	@echo "$(BLUE)Version:$(NC) $$(cat $(VERSION_F) 2>/dev/null || echo 'unknown')"
+	@echo "$(BLUE)Build:$(NC)   $$(cat BUILD_NUMBER 2>/dev/null || echo 'n/a')"
 
 # ============================================================================
 # Installation
 # ============================================================================
 
-install: ## Install package in development mode
+install: ## Install package in dev mode via uv sync
 	@echo "$(YELLOW)Installing notion-mpm in dev mode...$(NC)"
-	uv sync
+	@uv sync
 	@echo "$(GREEN)Done. Run 'uv run notion-mpm --help' to verify.$(NC)"
 
-install-dev: ## Install package with dev dependencies
+install-dev: ## Install with all dev dependencies
 	@echo "$(YELLOW)Installing notion-mpm with dev dependencies...$(NC)"
-	uv sync --extra dev
+	@uv sync --all-extras
 	@echo "$(GREEN)Done.$(NC)"
+
+sync: ## Sync uv lockfile with pyproject.toml
+	@uv sync
 
 # ============================================================================
 # Testing
 # ============================================================================
 
-test: ## Run pytest
+test: ## Run pytest (unit tests, no live API calls)
 	@echo "$(YELLOW)Running tests...$(NC)"
-	uv run pytest tests/ -v
-	@echo "$(GREEN)Tests completed.$(NC)"
+	@uv run pytest tests/ -v
+	@echo "$(GREEN)Tests passed.$(NC)"
 
-test-cov: ## Run pytest with coverage
+test-cov: ## Run pytest with HTML + terminal coverage report
 	@echo "$(YELLOW)Running tests with coverage...$(NC)"
-	uv run pytest tests/ -v --cov=src/$(PACKAGE) --cov-report=html --cov-report=term
-	@echo "$(GREEN)Coverage report generated in htmlcov/$(NC)"
+	@uv run pytest tests/ -v \
+		--cov=$(PKG) \
+		--cov-report=html \
+		--cov-report=term-missing
+	@echo "$(GREEN)Coverage report: htmlcov/index.html$(NC)"
+
+test-live: ## Run live Notion API integration tests (requires NOTION_API_KEY in .env.local)
+	@echo "$(YELLOW)Running live integration tests...$(NC)"
+	@if [ ! -f .env.local ]; then \
+		echo "$(RED)✗ .env.local not found — add NOTION_API_KEY$(NC)"; \
+		exit 1; \
+	fi
+	@uv run pytest tests/ -v -m live
+	@echo "$(GREEN)Live tests passed.$(NC)"
 
 # ============================================================================
 # Linting & Formatting
 # ============================================================================
 
-lint: ## Run ruff linter
+lint: ## Run ruff linter across src/, tests/, agents/
 	@echo "$(YELLOW)Running ruff linter...$(NC)"
-	uv run ruff check src/ tests/ || exit 1
+	@uv run ruff check src/ tests/ agents/
 	@echo "$(GREEN)Linting passed.$(NC)"
 
-format: ## Format code with ruff
+format: ## Format code with ruff (auto-fix + format)
 	@echo "$(YELLOW)Formatting code...$(NC)"
-	uv run ruff check src/ tests/ --fix || true
-	uv run ruff format src/ tests/
+	@uv run ruff check src/ tests/ agents/ --fix || true
+	@uv run ruff format src/ tests/ agents/
 	@echo "$(GREEN)Formatting complete.$(NC)"
 
-type-check: ## Run mypy type checker
-	@echo "$(YELLOW)Running type checks...$(NC)"
-	uv run mypy src/ --ignore-missing-imports || true
-	@echo "$(GREEN)Type check complete.$(NC)"
+type-check: ## Run mypy (strict, uses pyproject.toml config)
+	@echo "$(YELLOW)Running mypy...$(NC)"
+	@uv run mypy src/
+	@echo "$(GREEN)Type check passed.$(NC)"
+
+check: lint type-check test ## Run all quality gates: lint + type-check + test
+	@echo ""
+	@echo "$(GREEN)All checks passed.$(NC)"
 
 # ============================================================================
 # Cleanup
 # ============================================================================
 
-clean: ## Remove build artifacts
+clean: ## Remove build artifacts and caches
 	@echo "$(YELLOW)Cleaning build artifacts...$(NC)"
-	@rm -rf $(BUILD_DIR) $(DIST_DIR) *.egg-info src/*.egg-info
+	@rm -rf $(BUILD_DIR) $(DIST_DIR) *.egg-info $(PKG_SRC)/*.egg-info
 	@find . -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
 	@find . -type f -name "*.pyc" -delete 2>/dev/null || true
 	@find . -name ".DS_Store" -delete 2>/dev/null || true
+	@rm -rf .pytest_cache .mypy_cache .ruff_cache htmlcov .coverage
 	@echo "$(GREEN)Clean complete.$(NC)"
 
 # ============================================================================
 # Build
 # ============================================================================
 
-build: clean ## Build wheel and sdist
+build: clean ## Build wheel and sdist; bumps BUILD_NUMBER
 	@echo "$(YELLOW)Building package...$(NC)"
-	uv build
-	@echo "$(GREEN)Build complete.$(NC)"
-	@ls -la $(DIST_DIR)/
+	@# Increment build number
+	@if [ -f BUILD_NUMBER ]; then \
+		BUILD=$$(cat BUILD_NUMBER); \
+		echo "$$((BUILD + 1))" > BUILD_NUMBER; \
+	else \
+		echo "1" > BUILD_NUMBER; \
+	fi
+	@echo "$(BLUE)Build #$$(cat BUILD_NUMBER)$(NC)"
+	@uv build
+	@echo "$(GREEN)Build complete:$(NC)"
+	@ls -lh $(DIST_DIR)/
 
 # ============================================================================
 # Version Management
 # ============================================================================
 
-version: ## Show current version
-	@cat VERSION
+version: ## Show current version from VERSION file
+	@cat $(VERSION_F)
 
-sync-versions: ## Sync version from VERSION file into pyproject.toml and __version__.py
+sync-versions: ## Sync VERSION → pyproject.toml, __version__.py, src/PKG/VERSION
 	@echo "$(YELLOW)Syncing version files...$(NC)"
-	@VERSION=$$(cat VERSION); \
-	sed -i '' "s/^version = \"[^\"]*\"/version = \"$$VERSION\"/" pyproject.toml 2>/dev/null || \
-	sed -i  "s/^version = \"[^\"]*\"/version = \"$$VERSION\"/" pyproject.toml; \
-	sed -i '' "s/^__version__ = \"[^\"]*\"/__version__ = \"$$VERSION\"/" src/notion_mpm/__version__.py 2>/dev/null || \
-	sed -i  "s/^__version__ = \"[^\"]*\"/__version__ = \"$$VERSION\"/" src/notion_mpm/__version__.py; \
-	echo "$(GREEN)Synced to version $$VERSION$(NC)"
+	@V=$$(cat $(VERSION_F)); \
+	echo "$$V" > $(PKG_SRC)/VERSION; \
+	sed -i '' "s/^version = \"[^\"]*\"/version = \"$$V\"/" pyproject.toml 2>/dev/null || \
+		sed -i  "s/^version = \"[^\"]*\"/version = \"$$V\"/" pyproject.toml; \
+	sed -i '' "s/^__version__ = \"[^\"]*\"/__version__ = \"$$V\"/" $(VERSION_PY) 2>/dev/null || \
+		sed -i  "s/^__version__ = \"[^\"]*\"/__version__ = \"$$V\"/" $(VERSION_PY); \
+	echo "$(GREEN)All version files synced to $$V$(NC)"
 
-bump-patch: ## Bump patch version (x.y.Z+1)
+_check-clean: ## (internal) Require clean working directory
+	@if [ -n "$$(git status --porcelain 2>/dev/null)" ]; then \
+		echo "$(RED)Error: working directory is dirty. Commit or stash changes first.$(NC)"; \
+		git status --short; \
+		exit 1; \
+	fi
+
+_check-main: ## (internal) Warn if not on main branch
+	@BRANCH=$$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo 'unknown'); \
+	if [ "$$BRANCH" != "main" ]; then \
+		echo "$(YELLOW)Warning: not on main branch (currently: $$BRANCH)$(NC)"; \
+		read -p "Continue anyway? [y/N] " confirm; \
+		if [ "$$confirm" != "y" ] && [ "$$confirm" != "Y" ]; then \
+			echo "$(RED)Aborted.$(NC)"; exit 1; \
+		fi; \
+	fi
+
+bump-patch: _check-clean ## Bump patch version (x.y.Z → x.y.Z+1), sync all files
 	@echo "$(YELLOW)Bumping patch version...$(NC)"
-	@if [ -n "$$(git status --porcelain 2>/dev/null)" ]; then \
-		echo "$(RED)Error: Working directory is not clean. Commit or stash changes first.$(NC)"; \
-		exit 1; \
-	fi
-	@VERSION=$$(cat VERSION); \
-	MAJOR=$$(echo $$VERSION | cut -d. -f1); \
-	MINOR=$$(echo $$VERSION | cut -d. -f2); \
-	PATCH=$$(echo $$VERSION | cut -d. -f3); \
-	NEW_PATCH=$$((PATCH + 1)); \
-	NEW_VERSION="$$MAJOR.$$MINOR.$$NEW_PATCH"; \
-	echo "$$NEW_VERSION" > VERSION; \
-	echo "$(GREEN)Version bumped: $$VERSION -> $$NEW_VERSION$(NC)"
+	@V=$$(cat $(VERSION_F)); \
+	MAJ=$$(echo $$V | cut -d. -f1); \
+	MIN=$$(echo $$V | cut -d. -f2); \
+	PAT=$$(echo $$V | cut -d. -f3); \
+	NEW="$$MAJ.$$MIN.$$((PAT + 1))"; \
+	echo "$$NEW" > $(VERSION_F); \
+	echo "$(GREEN)$$V → $$NEW$(NC)"
 	@$(MAKE) sync-versions
 
-bump-minor: ## Bump minor version (x.Y+1.0)
+bump-minor: _check-clean ## Bump minor version (x.Y.z → x.Y+1.0), sync all files
 	@echo "$(YELLOW)Bumping minor version...$(NC)"
-	@if [ -n "$$(git status --porcelain 2>/dev/null)" ]; then \
-		echo "$(RED)Error: Working directory is not clean. Commit or stash changes first.$(NC)"; \
-		exit 1; \
-	fi
-	@VERSION=$$(cat VERSION); \
-	MAJOR=$$(echo $$VERSION | cut -d. -f1); \
-	MINOR=$$(echo $$VERSION | cut -d. -f2); \
-	NEW_MINOR=$$((MINOR + 1)); \
-	NEW_VERSION="$$MAJOR.$$NEW_MINOR.0"; \
-	echo "$$NEW_VERSION" > VERSION; \
-	echo "$(GREEN)Version bumped: $$VERSION -> $$NEW_VERSION$(NC)"
+	@V=$$(cat $(VERSION_F)); \
+	MAJ=$$(echo $$V | cut -d. -f1); \
+	MIN=$$(echo $$V | cut -d. -f2); \
+	NEW="$$MAJ.$$((MIN + 1)).0"; \
+	echo "$$NEW" > $(VERSION_F); \
+	echo "$(GREEN)$$V → $$NEW$(NC)"
 	@$(MAKE) sync-versions
 
-bump-major: ## Bump major version (X+1.0.0)
+bump-major: _check-clean ## Bump major version (X.y.z → X+1.0.0), sync all files
 	@echo "$(YELLOW)Bumping major version...$(NC)"
-	@if [ -n "$$(git status --porcelain 2>/dev/null)" ]; then \
-		echo "$(RED)Error: Working directory is not clean. Commit or stash changes first.$(NC)"; \
-		exit 1; \
-	fi
-	@VERSION=$$(cat VERSION); \
-	MAJOR=$$(echo $$VERSION | cut -d. -f1); \
-	NEW_MAJOR=$$((MAJOR + 1)); \
-	NEW_VERSION="$$NEW_MAJOR.0.0"; \
-	echo "$$NEW_VERSION" > VERSION; \
-	echo "$(GREEN)Version bumped: $$VERSION -> $$NEW_VERSION$(NC)"
+	@V=$$(cat $(VERSION_F)); \
+	MAJ=$$(echo $$V | cut -d. -f1); \
+	NEW="$$((MAJ + 1)).0.0"; \
+	echo "$$NEW" > $(VERSION_F); \
+	echo "$(GREEN)$$V → $$NEW$(NC)"
 	@$(MAKE) sync-versions
 
 # ============================================================================
 # Git Operations
 # ============================================================================
 
-tag: ## Create git tag for current version
-	@VERSION=$$(cat VERSION); \
-	echo "$(YELLOW)Creating tag v$$VERSION...$(NC)"; \
-	git tag -a "v$$VERSION" -m "Release v$$VERSION"; \
-	echo "$(GREEN)Tag v$$VERSION created$(NC)"
+tag: ## Create annotated git tag for current version
+	@V=$$(cat $(VERSION_F)); \
+	echo "$(YELLOW)Creating annotated tag v$$V...$(NC)"; \
+	git tag -a "v$$V" -m "Release v$$V"; \
+	echo "$(GREEN)Tagged v$$V$(NC)"
 
 push: ## Push commits to origin
-	@echo "$(YELLOW)Pushing commits to origin...$(NC)"
-	git push origin
-	@echo "$(GREEN)Commits pushed$(NC)"
+	@echo "$(YELLOW)Pushing commits...$(NC)"
+	@git push origin
+	@echo "$(GREEN)Pushed.$(NC)"
 
-push-tags: ## Push tags to origin
-	@echo "$(YELLOW)Pushing tags to origin...$(NC)"
-	git push origin --tags
-	@echo "$(GREEN)Tags pushed$(NC)"
+push-tags: ## Push all tags to origin
+	@echo "$(YELLOW)Pushing tags...$(NC)"
+	@git push origin --tags
+	@echo "$(GREEN)Tags pushed.$(NC)"
 
 # ============================================================================
 # PyPI Token Resolution
-# Looks in (in order):
-#   1. .env.local (local project override)
-#   2. ../gworkspace-mcp/.env.local (shared creds)
+# Searches (in order):
+#   1. .env.local                           (project-level override)
+#   2. ../gworkspace-mcp/.env.local         (shared credentials)
 # ============================================================================
 
-_load-pypi-token:
-	@if [ -f .env.local ]; then \
-		. .env.local; \
-	fi; \
-	if [ -z "$${PYPI_TOKEN:-}" ] && [ -f ../gworkspace-mcp/.env.local ]; then \
-		. ../gworkspace-mcp/.env.local; \
-	fi; \
-	if [ -z "$${PYPI_TOKEN:-}" ]; then \
-		echo "$(RED)Error: PYPI_TOKEN not found.$(NC)"; \
-		echo "$(YELLOW)Set it in .env.local or ../gworkspace-mcp/.env.local$(NC)"; \
-		exit 1; \
-	fi
+define resolve_pypi_token
+PYPI_TOKEN=""; \
+if [ -f .env.local ]; then . .env.local; fi; \
+if [ -z "$${PYPI_TOKEN:-}" ] && [ -f ../gworkspace-mcp/.env.local ]; then \
+	. ../gworkspace-mcp/.env.local; \
+fi; \
+if [ -z "$${PYPI_TOKEN:-}" ]; then \
+	echo "$(RED)✗ PYPI_TOKEN not found in .env.local or ../gworkspace-mcp/.env.local$(NC)"; \
+	exit 1; \
+fi
+endef
 
 # ============================================================================
 # Pre-Publish Quality Gate
 # ============================================================================
 
-pre-publish: lint test ## Run quality checks before publishing
-	@echo "$(BLUE)============================================$(NC)"
-	@echo "$(BLUE)Pre-Publish Quality Gate$(NC)"
-	@echo "$(BLUE)============================================$(NC)"
-	@echo ""
-	@echo "$(YELLOW)Checking working directory...$(NC)"
-	@if [ -n "$$(git status --porcelain 2>/dev/null)" ]; then \
-		echo "$(YELLOW)Warning: Working directory has uncommitted changes$(NC)"; \
-	else \
-		echo "$(GREEN)Working directory is clean.$(NC)"; \
-	fi
+pre-publish: ## Run quality gates + token check before publishing
+	@echo "$(BLUE)═══════════════════════════════════════════════════$(NC)"
+	@echo "$(BLUE)  Pre-Publish Quality Gate$(NC)"
+	@echo "$(BLUE)═══════════════════════════════════════════════════$(NC)"
+	@$(MAKE) lint
+	@$(MAKE) type-check
+	@$(MAKE) test
 	@echo ""
 	@echo "$(YELLOW)Checking PyPI token...$(NC)"
 	@PYPI_TOKEN=""; \
 	if [ -f .env.local ]; then . .env.local; fi; \
-	if [ -z "$${PYPI_TOKEN:-}" ] && [ -f ../gworkspace-mcp/.env.local ]; then . ../gworkspace-mcp/.env.local; fi; \
+	if [ -z "$${PYPI_TOKEN:-}" ] && [ -f ../gworkspace-mcp/.env.local ]; then \
+		. ../gworkspace-mcp/.env.local; \
+	fi; \
 	if [ -z "$${PYPI_TOKEN:-}" ]; then \
-		echo "$(RED)Error: PYPI_TOKEN not found in .env.local or ../gworkspace-mcp/.env.local$(NC)"; \
+		echo "$(RED)✗ PYPI_TOKEN not found — add to .env.local or ../gworkspace-mcp/.env.local$(NC)"; \
 		exit 1; \
 	else \
-		echo "$(GREEN)PYPI_TOKEN found.$(NC)"; \
+		echo "$(GREEN)✓ PYPI_TOKEN found$(NC)"; \
 	fi
 	@echo ""
-	@echo "$(GREEN)============================================$(NC)"
-	@echo "$(GREEN)Pre-publish checks PASSED!$(NC)"
-	@echo "$(GREEN)============================================$(NC)"
+	@echo "$(GREEN)═══════════════════════════════════════════════════$(NC)"
+	@echo "$(GREEN)  Quality gate PASSED — ready to publish$(NC)"
+	@echo "$(GREEN)═══════════════════════════════════════════════════$(NC)"
 
 # ============================================================================
-# Publish Targets
+# Publishing Workflows
+# All publish targets: pre-publish → bump → sync → commit → tag → push → build → PyPI → GitHub
 # ============================================================================
 
-publish: ## Bump patch + build + publish to PyPI + GitHub Release
-	@echo "$(BLUE)═══════════════════════════════════════════$(NC)"
+publish: _check-clean _check-main pre-publish ## Bump patch + full release (PyPI + GitHub Release + annotated tag)
+	@echo "$(BLUE)═══════════════════════════════════════════════════$(NC)"
 	@echo "$(BLUE)  Publishing Patch Release$(NC)"
-	@echo "$(BLUE)═══════════════════════════════════════════$(NC)"
-	@$(MAKE) pre-publish
-	@CURRENT=$$(cat VERSION); \
-	MAJOR=$$(echo $$CURRENT | cut -d. -f1); \
-	MINOR=$$(echo $$CURRENT | cut -d. -f2); \
-	PATCH=$$(echo $$CURRENT | cut -d. -f3); \
-	NEW_PATCH=$$((PATCH + 1)); \
-	NEW_VERSION="$$MAJOR.$$MINOR.$$NEW_PATCH"; \
-	echo "$(YELLOW)Version: $$CURRENT -> $$NEW_VERSION$(NC)"; \
-	echo "$$NEW_VERSION" > VERSION; \
+	@echo "$(BLUE)═══════════════════════════════════════════════════$(NC)"
+	@V=$$(cat $(VERSION_F)); \
+	MAJ=$$(echo $$V | cut -d. -f1); \
+	MIN=$$(echo $$V | cut -d. -f2); \
+	PAT=$$(echo $$V | cut -d. -f3); \
+	NEW="$$MAJ.$$MIN.$$((PAT + 1))"; \
+	echo "$(YELLOW)Version: $$V → $$NEW$(NC)"; \
+	echo "$$NEW" > $(VERSION_F); \
 	$(MAKE) sync-versions; \
-	git add VERSION pyproject.toml; \
-	git commit -m "chore: bump version to $$NEW_VERSION"; \
-	git tag "v$$NEW_VERSION"; \
-	git push && git push --tags; \
-	echo "$(GREEN)Committed, tagged, pushed$(NC)"; \
+	echo "$(GREEN)✓ Version files synced$(NC)"; \
+	git add $(VERSION_F) $(PKG_SRC)/VERSION pyproject.toml $(VERSION_PY); \
+	git commit -m "chore: bump version to $$NEW"; \
+	echo "$(GREEN)✓ Committed$(NC)"; \
+	git tag -a "v$$NEW" -m "Release v$$NEW"; \
+	echo "$(GREEN)✓ Tagged v$$NEW$(NC)"; \
+	git push origin && git push origin --tags; \
+	echo "$(GREEN)✓ Pushed to origin$(NC)"; \
+	rm -rf dist/; \
 	$(MAKE) build; \
+	echo "$(GREEN)✓ Built package$(NC)"; \
 	PYPI_TOKEN=""; \
 	if [ -f .env.local ]; then . .env.local; fi; \
 	if [ -z "$${PYPI_TOKEN:-}" ] && [ -f ../gworkspace-mcp/.env.local ]; then . ../gworkspace-mcp/.env.local; fi; \
-	UV_PUBLISH_TOKEN="$$PYPI_TOKEN" uv publish && \
-	echo "$(GREEN)Published to PyPI$(NC)"; \
+	UV_PUBLISH_TOKEN="$$PYPI_TOKEN" uv run twine upload dist/*; \
+	echo "$(GREEN)✓ Published to PyPI$(NC)"; \
 	if command -v gh >/dev/null 2>&1; then \
-		gh release create "v$$NEW_VERSION" --title "v$$NEW_VERSION" --generate-notes dist/* \
-			&& echo "$(GREEN)GitHub Release created$(NC)" \
-			|| echo "$(YELLOW)GitHub Release skipped$(NC)"; \
+		gh release create "v$$NEW" \
+			--title "v$$NEW" \
+			--generate-notes \
+			dist/* \
+			&& echo "$(GREEN)✓ GitHub Release created$(NC)" \
+			|| echo "$(YELLOW)⚠ GitHub Release failed (non-blocking)$(NC)"; \
 	else \
-		echo "$(YELLOW)gh CLI not found - skipping GitHub Release$(NC)"; \
+		echo "$(YELLOW)⚠ gh CLI not found — skipping GitHub Release$(NC)"; \
 	fi; \
-	echo "$(GREEN)═══════════════════════════════════════════$(NC)"; \
-	echo "$(GREEN)  Published notion-mpm $$NEW_VERSION$(NC)"; \
-	echo "$(GREEN)═══════════════════════════════════════════$(NC)"
+	echo ""; \
+	echo "$(GREEN)═══════════════════════════════════════════════════$(NC)"; \
+	echo "$(GREEN)  ✓ notion-mpm $$NEW published$(NC)"; \
+	echo "$(GREEN)  ✓ PyPI + GitHub Release + git tag v$$NEW$(NC)"; \
+	echo "$(GREEN)═══════════════════════════════════════════════════$(NC)"
 
-publish-minor: ## Bump minor + build + publish to PyPI + GitHub Release
-	@echo "$(BLUE)═══════════════════════════════════════════$(NC)"
+publish-minor: _check-clean _check-main pre-publish ## Bump minor + full release
+	@echo "$(BLUE)═══════════════════════════════════════════════════$(NC)"
 	@echo "$(BLUE)  Publishing Minor Release$(NC)"
-	@echo "$(BLUE)═══════════════════════════════════════════$(NC)"
-	@$(MAKE) pre-publish
-	@CURRENT=$$(cat VERSION); \
-	MAJOR=$$(echo $$CURRENT | cut -d. -f1); \
-	MINOR=$$(echo $$CURRENT | cut -d. -f2); \
-	NEW_MINOR=$$((MINOR + 1)); \
-	NEW_VERSION="$$MAJOR.$$NEW_MINOR.0"; \
-	echo "$(YELLOW)Version: $$CURRENT -> $$NEW_VERSION$(NC)"; \
-	echo "$$NEW_VERSION" > VERSION; \
+	@echo "$(BLUE)═══════════════════════════════════════════════════$(NC)"
+	@V=$$(cat $(VERSION_F)); \
+	MAJ=$$(echo $$V | cut -d. -f1); \
+	MIN=$$(echo $$V | cut -d. -f2); \
+	NEW="$$MAJ.$$((MIN + 1)).0"; \
+	echo "$(YELLOW)Version: $$V → $$NEW$(NC)"; \
+	echo "$$NEW" > $(VERSION_F); \
 	$(MAKE) sync-versions; \
-	git add VERSION pyproject.toml; \
-	git commit -m "chore: bump version to $$NEW_VERSION"; \
-	git tag "v$$NEW_VERSION"; \
-	git push && git push --tags; \
-	echo "$(GREEN)Committed, tagged, pushed$(NC)"; \
+	echo "$(GREEN)✓ Version files synced$(NC)"; \
+	git add $(VERSION_F) $(PKG_SRC)/VERSION pyproject.toml $(VERSION_PY); \
+	git commit -m "chore: bump version to $$NEW"; \
+	echo "$(GREEN)✓ Committed$(NC)"; \
+	git tag -a "v$$NEW" -m "Release v$$NEW"; \
+	echo "$(GREEN)✓ Tagged v$$NEW$(NC)"; \
+	git push origin && git push origin --tags; \
+	echo "$(GREEN)✓ Pushed to origin$(NC)"; \
+	rm -rf dist/; \
 	$(MAKE) build; \
+	echo "$(GREEN)✓ Built package$(NC)"; \
 	PYPI_TOKEN=""; \
 	if [ -f .env.local ]; then . .env.local; fi; \
 	if [ -z "$${PYPI_TOKEN:-}" ] && [ -f ../gworkspace-mcp/.env.local ]; then . ../gworkspace-mcp/.env.local; fi; \
-	UV_PUBLISH_TOKEN="$$PYPI_TOKEN" uv publish && \
-	echo "$(GREEN)Published to PyPI$(NC)"; \
+	UV_PUBLISH_TOKEN="$$PYPI_TOKEN" uv run twine upload dist/*; \
+	echo "$(GREEN)✓ Published to PyPI$(NC)"; \
 	if command -v gh >/dev/null 2>&1; then \
-		gh release create "v$$NEW_VERSION" --title "v$$NEW_VERSION" --generate-notes dist/* \
-			&& echo "$(GREEN)GitHub Release created$(NC)" \
-			|| echo "$(YELLOW)GitHub Release skipped$(NC)"; \
+		gh release create "v$$NEW" \
+			--title "v$$NEW" \
+			--generate-notes \
+			dist/* \
+			&& echo "$(GREEN)✓ GitHub Release created$(NC)" \
+			|| echo "$(YELLOW)⚠ GitHub Release failed (non-blocking)$(NC)"; \
 	else \
-		echo "$(YELLOW)gh CLI not found - skipping GitHub Release$(NC)"; \
-	fi
+		echo "$(YELLOW)⚠ gh CLI not found — skipping GitHub Release$(NC)"; \
+	fi; \
+	echo ""; \
+	echo "$(GREEN)═══════════════════════════════════════════════════$(NC)"; \
+	echo "$(GREEN)  ✓ notion-mpm $$NEW published$(NC)"; \
+	echo "$(GREEN)  ✓ PyPI + GitHub Release + git tag v$$NEW$(NC)"; \
+	echo "$(GREEN)═══════════════════════════════════════════════════$(NC)"
 
-publish-major: ## Bump major + build + publish to PyPI + GitHub Release
-	@echo "$(BLUE)═══════════════════════════════════════════$(NC)"
+publish-major: _check-clean _check-main pre-publish ## Bump major + full release
+	@echo "$(BLUE)═══════════════════════════════════════════════════$(NC)"
 	@echo "$(BLUE)  Publishing Major Release$(NC)"
-	@echo "$(BLUE)═══════════════════════════════════════════$(NC)"
-	@$(MAKE) pre-publish
-	@CURRENT=$$(cat VERSION); \
-	MAJOR=$$(echo $$CURRENT | cut -d. -f1); \
-	NEW_MAJOR=$$((MAJOR + 1)); \
-	NEW_VERSION="$$NEW_MAJOR.0.0"; \
-	echo "$(YELLOW)Version: $$CURRENT -> $$NEW_VERSION$(NC)"; \
-	echo "$$NEW_VERSION" > VERSION; \
+	@echo "$(BLUE)═══════════════════════════════════════════════════$(NC)"
+	@V=$$(cat $(VERSION_F)); \
+	MAJ=$$(echo $$V | cut -d. -f1); \
+	NEW="$$((MAJ + 1)).0.0"; \
+	echo "$(YELLOW)Version: $$V → $$NEW$(NC)"; \
+	echo "$$NEW" > $(VERSION_F); \
 	$(MAKE) sync-versions; \
-	git add VERSION pyproject.toml; \
-	git commit -m "chore: bump version to $$NEW_VERSION"; \
-	git tag "v$$NEW_VERSION"; \
-	git push && git push --tags; \
-	echo "$(GREEN)Committed, tagged, pushed$(NC)"; \
+	echo "$(GREEN)✓ Version files synced$(NC)"; \
+	git add $(VERSION_F) $(PKG_SRC)/VERSION pyproject.toml $(VERSION_PY); \
+	git commit -m "chore: bump version to $$NEW"; \
+	echo "$(GREEN)✓ Committed$(NC)"; \
+	git tag -a "v$$NEW" -m "Release v$$NEW"; \
+	echo "$(GREEN)✓ Tagged v$$NEW$(NC)"; \
+	git push origin && git push origin --tags; \
+	echo "$(GREEN)✓ Pushed to origin$(NC)"; \
+	rm -rf dist/; \
 	$(MAKE) build; \
+	echo "$(GREEN)✓ Built package$(NC)"; \
 	PYPI_TOKEN=""; \
 	if [ -f .env.local ]; then . .env.local; fi; \
 	if [ -z "$${PYPI_TOKEN:-}" ] && [ -f ../gworkspace-mcp/.env.local ]; then . ../gworkspace-mcp/.env.local; fi; \
-	UV_PUBLISH_TOKEN="$$PYPI_TOKEN" uv publish && \
-	echo "$(GREEN)Published to PyPI$(NC)"; \
+	UV_PUBLISH_TOKEN="$$PYPI_TOKEN" uv run twine upload dist/*; \
+	echo "$(GREEN)✓ Published to PyPI$(NC)"; \
 	if command -v gh >/dev/null 2>&1; then \
-		gh release create "v$$NEW_VERSION" --title "v$$NEW_VERSION" --generate-notes dist/* \
-			&& echo "$(GREEN)GitHub Release created$(NC)" \
-			|| echo "$(YELLOW)GitHub Release skipped$(NC)"; \
+		gh release create "v$$NEW" \
+			--title "v$$NEW" \
+			--generate-notes \
+			dist/* \
+			&& echo "$(GREEN)✓ GitHub Release created$(NC)" \
+			|| echo "$(YELLOW)⚠ GitHub Release failed (non-blocking)$(NC)"; \
 	else \
-		echo "$(YELLOW)gh CLI not found - skipping GitHub Release$(NC)"; \
-	fi
+		echo "$(YELLOW)⚠ gh CLI not found — skipping GitHub Release$(NC)"; \
+	fi; \
+	echo ""; \
+	echo "$(GREEN)═══════════════════════════════════════════════════$(NC)"; \
+	echo "$(GREEN)  ✓ notion-mpm $$NEW published$(NC)"; \
+	echo "$(GREEN)  ✓ PyPI + GitHub Release + git tag v$$NEW$(NC)"; \
+	echo "$(GREEN)═══════════════════════════════════════════════════$(NC)"
 
-publish-only: ## Publish current version to PyPI (no version bump)
+publish-only: ## Publish current version to PyPI (no bump, no tag, no push)
 	@echo "$(BLUE)Publishing current version to PyPI...$(NC)"
+	@rm -rf dist/
 	@$(MAKE) build
 	@PYPI_TOKEN=""; \
 	if [ -f .env.local ]; then . .env.local; fi; \
 	if [ -z "$${PYPI_TOKEN:-}" ] && [ -f ../gworkspace-mcp/.env.local ]; then . ../gworkspace-mcp/.env.local; fi; \
 	if [ -z "$${PYPI_TOKEN:-}" ]; then \
-		echo "$(RED)Error: PYPI_TOKEN not found$(NC)"; \
+		echo "$(RED)✗ PYPI_TOKEN not found$(NC)"; \
 		exit 1; \
 	fi; \
-	UV_PUBLISH_TOKEN="$$PYPI_TOKEN" uv publish && \
-	echo "$(GREEN)Published to PyPI$(NC)"
+	UV_PUBLISH_TOKEN="$$PYPI_TOKEN" uv run twine upload dist/*
+	@echo "$(GREEN)✓ Published to PyPI$(NC)"

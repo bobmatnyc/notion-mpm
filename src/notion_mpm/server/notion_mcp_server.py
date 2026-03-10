@@ -536,7 +536,7 @@ class NotionMCPServer:
     def _setup_handlers(self) -> None:
         """Register MCP tool handlers on the server."""
 
-        @self.server.list_tools()  # type: ignore[no-untyped-call]
+        @self.server.list_tools()
         async def list_tools() -> list[types.Tool]:
             return NOTION_TOOLS
 
