@@ -1,4 +1,4 @@
-"""Notion MCP Server - thin MCP adapter over the Notion API client library."""
+"""Notion MCP Server — thin MCP adapter over NotionService."""
 
 from __future__ import annotations
 
@@ -9,9 +9,9 @@ import mcp.types as types
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
 
-from notion_mpm.api import blocks, comments, databases, pages, search, users
 from notion_mpm.api._client import NotionAPIError
-from notion_mpm.auth.token_manager import TokenManager
+from notion_mpm.api.comments import make_rich_text
+from notion_mpm.services.notion_service import NotionService
 
 
 def _pick(args: dict[str, Any], keys: list[str]) -> dict[str, Any]:
@@ -79,7 +79,8 @@ NOTION_TOOLS: list[types.Tool] = [
                     "type": "object",
                     "description": (
                         "Page properties matching the parent schema. "
-                        'For a plain page: {"title": {"title": [{"text": {"content": "My Title"}}]}}'
+                        "For a plain page: "
+                        '{"title": {"title": [{"text": {"content": "My Title"}}]}}'
                     ),
                 },
                 "children": {
@@ -92,7 +93,9 @@ NOTION_TOOLS: list[types.Tool] = [
                 },
                 "cover": {
                     "type": "object",
-                    "description": 'Optional cover. E.g., {"type": "external", "external": {"url": "..."}}',  # noqa: E501
+                    "description": (
+                        'Optional cover. E.g., {"type": "external", "external": {"url": "..."}}'
+                    ),
                 },
             },
             "required": ["parent", "properties"],
@@ -234,7 +237,8 @@ NOTION_TOOLS: list[types.Tool] = [
                     "type": "object",
                     "description": (
                         "Dict with block type key and updated content. "
-                        'E.g., {"paragraph": {"rich_text": [{"type": "text", "text": {"content": "New text"}}]}}'  # noqa: E501
+                        'E.g., {"paragraph": {"rich_text": [{"type": "text", '
+                        '"text": {"content": "New text"}}]}}'
                     ),
                 },
             },
@@ -293,7 +297,8 @@ NOTION_TOOLS: list[types.Tool] = [
                     "type": "object",
                     "description": (
                         "Property schema. Must include a Name/title property. "
-                        'E.g., {"Name": {"title": {}}, "Status": {"select": {"options": [{"name": "Todo"}]}}}'  # noqa: E501
+                        'E.g., {"Name": {"title": {}}, '
+                        '"Status": {"select": {"options": [{"name": "Todo"}]}}}'
                     ),
                 },
                 "is_inline": {
@@ -431,7 +436,9 @@ NOTION_TOOLS: list[types.Tool] = [
             "properties": {
                 "query": {
                     "type": "string",
-                    "description": "Text to search for. Empty string returns all accessible content.",
+                    "description": (
+                        "Text to search for. Empty string returns all accessible content."
+                    ),
                     "default": "",
                 },
                 "filter_type": {
@@ -512,29 +519,24 @@ NOTION_TOOLS: list[types.Tool] = [
 
 
 class NotionMCPServer:
-    """Thin MCP adapter that exposes Notion API functions as MCP tools."""
+    """Thin MCP adapter that exposes NotionService methods as MCP tools.
 
-    def __init__(self) -> None:
-        """Initialize the Notion MCP server."""
-        self.server: Server = Server("notion-mpm")
-        self._token_manager = TokenManager()
+    Takes a ``NotionService`` instance via constructor injection — the server
+    itself has no knowledge of tokens or HTTP clients.
+
+    Args:
+        service: A fully-configured ``NotionService`` instance.
+    """
+
+    def __init__(self, service: NotionService) -> None:
+        self._service = service
+        self.server: Server[Any, Any] = Server("notion-mpm")
         self._setup_handlers()
-
-    def _get_token(self) -> str:
-        """Get the integration token.
-
-        Returns:
-            Token string.
-
-        Raises:
-            ValueError: If no token is configured.
-        """
-        return self._token_manager.get_token()
 
     def _setup_handlers(self) -> None:
         """Register MCP tool handlers on the server."""
 
-        @self.server.list_tools()
+        @self.server.list_tools()  # type: ignore[no-untyped-call]
         async def list_tools() -> list[types.Tool]:
             return NOTION_TOOLS
 
@@ -544,12 +546,14 @@ class NotionMCPServer:
                 result = await self._dispatch_tool(name, arguments)
                 return [types.TextContent(type="text", text=json.dumps(result, indent=2))]
             except NotionAPIError as e:
-                return [types.TextContent(type="text", text=f"Notion API error: {e.code} — {e.message}")]
+                return [
+                    types.TextContent(type="text", text=f"Notion API error: {e.code} — {e.message}")
+                ]
             except ValueError as e:
                 return [types.TextContent(type="text", text=str(e))]
 
     async def _dispatch_tool(self, name: str, arguments: dict[str, Any]) -> Any:
-        """Route tool calls to the appropriate API function.
+        """Route tool calls to the appropriate NotionService method.
 
         Args:
             name: Tool name to invoke.
@@ -559,67 +563,64 @@ class NotionMCPServer:
             Response from the Notion API.
 
         Raises:
-            ValueError: If the tool name is not recognized.
+            ValueError: If the tool name is not recognised.
             NotionAPIError: If the Notion API returns an error.
         """
-        token = self._get_token()
+        svc = self._service
 
         handlers: dict[str, Any] = {
             # Pages
-            "get_page": lambda a: pages.get_page(token, a["page_id"]),
-            "get_page_property": lambda a: pages.get_page_property(
-                token, a["page_id"], a["property_id"], **_pick(a, ["page_size"])
+            "get_page": lambda a: svc.get_page(a["page_id"]),
+            "get_page_property": lambda a: svc.get_page_property(
+                a["page_id"], a["property_id"], **_pick(a, ["page_size"])
             ),
-            "create_page": lambda a: pages.create_page(
-                token, a["parent"], a["properties"],
+            "create_page": lambda a: svc.create_page(
+                a["parent"],
+                a["properties"],
                 **_pick(a, ["children", "icon", "cover"]),
             ),
-            "update_page": lambda a: pages.update_page(
-                token, a["page_id"], **_pick(a, ["properties", "icon", "cover"])
+            "update_page": lambda a: svc.update_page(
+                a["page_id"], **_pick(a, ["properties", "icon", "cover"])
             ),
-            "archive_page": lambda a: pages.archive_page(token, a["page_id"]),
-            "restore_page": lambda a: pages.restore_page(token, a["page_id"]),
+            "archive_page": lambda a: svc.archive_page(a["page_id"]),
+            "restore_page": lambda a: svc.restore_page(a["page_id"]),
             # Blocks
-            "get_block": lambda a: blocks.get_block(token, a["block_id"]),
-            "get_block_children": lambda a: blocks.get_block_children(
-                token, a["block_id"], **_pick(a, ["page_size", "start_cursor"])
+            "get_block": lambda a: svc.get_block(a["block_id"]),
+            "get_block_children": lambda a: svc.get_block_children(
+                a["block_id"], **_pick(a, ["page_size", "start_cursor"])
             ),
-            "append_block_children": lambda a: blocks.append_block_children(
-                token, a["block_id"], a["children"], **_pick(a, ["after"])
+            "append_block_children": lambda a: svc.append_block_children(
+                a["block_id"], a["children"], **_pick(a, ["after"])
             ),
-            "update_block": lambda a: blocks.update_block(token, a["block_id"], a["block_data"]),
-            "delete_block": lambda a: blocks.delete_block(token, a["block_id"]),
+            "update_block": lambda a: svc.update_block(a["block_id"], a["block_data"]),
+            "delete_block": lambda a: svc.delete_block(a["block_id"]),
             # Databases
-            "get_database": lambda a: databases.get_database(token, a["database_id"]),
-            "create_database": lambda a: databases.create_database(
-                token,
+            "get_database": lambda a: svc.get_database(a["database_id"]),
+            "create_database": lambda a: svc.create_database(
                 {"type": "page_id", "page_id": a["parent_page_id"]},
                 [{"type": "text", "text": {"content": a["title"]}}],
                 a["properties"],
                 is_inline=a.get("is_inline", False),
             ),
-            "update_database": lambda a: self._update_database(token, a),
-            "query_database": lambda a: databases.query_database(
-                token, a["database_id"],
+            "update_database": lambda a: self._update_database(a),
+            "query_database": lambda a: svc.query_database(
+                a["database_id"],
                 filter=a.get("filter"),
                 sorts=a.get("sorts"),
                 **_pick(a, ["start_cursor", "page_size"]),
             ),
             # Users
-            "list_users": lambda a: users.list_users(
-                token, **_pick(a, ["page_size", "start_cursor"])
-            ),
-            "get_user": lambda a: users.get_user(token, a["user_id"]),
-            "get_bot_user": lambda a: users.get_bot_user(token),
+            "list_users": lambda a: svc.list_users(**_pick(a, ["page_size", "start_cursor"])),
+            "get_user": lambda a: svc.get_user(a["user_id"]),
+            "get_bot_user": lambda a: svc.get_bot_user(),
             # Search
-            "search": lambda a: self._search(token, a),
+            "search": lambda a: self._search(a),
             # Comments
-            "get_comments": lambda a: comments.get_comments(
-                token, a["block_id"], **_pick(a, ["page_size", "start_cursor"])
+            "get_comments": lambda a: svc.get_comments(
+                a["block_id"], **_pick(a, ["page_size", "start_cursor"])
             ),
-            "create_comment": lambda a: comments.create_comment(
-                token,
-                comments.make_rich_text(a["text"]),
+            "create_comment": lambda a: svc.create_comment(
+                make_rich_text(a["text"]),
                 page_id=a.get("page_id"),
                 discussion_id=a.get("discussion_id"),
             ),
@@ -630,8 +631,8 @@ class NotionMCPServer:
 
         return await handlers[name](arguments)
 
-    async def _search(self, token: str, args: dict[str, Any]) -> dict[str, Any]:
-        """Build search call with optional type filter."""
+    async def _search(self, args: dict[str, Any]) -> dict[str, Any]:
+        """Build search call with optional type filter and sort."""
         filter_obj: dict[str, Any] | None = None
         if "filter_type" in args:
             filter_obj = {"property": "object", "value": args["filter_type"]}
@@ -640,8 +641,7 @@ class NotionMCPServer:
         if "sort_direction" in args:
             sort_obj = {"direction": args["sort_direction"], "timestamp": "last_edited_time"}
 
-        return await search.search(
-            token,
+        return await self._service.search(
             args.get("query", ""),
             filter=filter_obj,
             sort=sort_obj,
@@ -649,7 +649,7 @@ class NotionMCPServer:
             page_size=args.get("page_size", 20),
         )
 
-    async def _update_database(self, token: str, args: dict[str, Any]) -> dict[str, Any]:
+    async def _update_database(self, args: dict[str, Any]) -> dict[str, Any]:
         """Build update_database call with optional rich text title/description."""
         kwargs: dict[str, Any] = {}
         if "title" in args:
@@ -658,13 +658,23 @@ class NotionMCPServer:
             kwargs["description"] = [{"type": "text", "text": {"content": args["description"]}}]
         if "properties" in args:
             kwargs["properties"] = args["properties"]
-        return await databases.update_database(token, args["database_id"], **kwargs)
+        return await self._service.update_database(args["database_id"], **kwargs)
 
-    async def run(self) -> None:
-        """Run the MCP server over stdio."""
+    async def run(self, container: Any | None = None) -> None:
+        """Run the MCP server over stdio.
+
+        Args:
+            container: Optional ``Container`` instance — if provided, its
+                ``aclose()`` method is called when the server exits so that
+                HTTP connections are released cleanly.
+        """
         async with stdio_server() as (read_stream, write_stream):
-            await self.server.run(
-                read_stream,
-                write_stream,
-                self.server.create_initialization_options(),
-            )
+            try:
+                await self.server.run(
+                    read_stream,
+                    write_stream,
+                    self.server.create_initialization_options(),
+                )
+            finally:
+                if container is not None:
+                    await container.aclose()

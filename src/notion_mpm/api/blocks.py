@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from notion_mpm.api._client import notion_delete, notion_get, notion_patch, notion_post
+from notion_mpm.api._client import notion_delete, notion_get, notion_patch
 
 
 async def get_block(token: str, block_id: str) -> dict[str, Any]:
@@ -101,8 +101,8 @@ async def update_block(
     Args:
         token: Notion integration token.
         block_id: The block UUID to update.
-        block_data: Dict containing the block type and its updated content.
-                    E.g., {"paragraph": {"rich_text": [{"type": "text", "text": {"content": "..."}}]}}
+        block_data: Dict with block type key and updated content.
+                    E.g., ``{"paragraph": {"rich_text": [...]}}``
 
     Returns:
         Updated block object.
@@ -169,9 +169,7 @@ def make_bulleted_item(text: str) -> dict[str, Any]:
     return {
         "object": "block",
         "type": "bulleted_list_item",
-        "bulleted_list_item": {
-            "rich_text": [{"type": "text", "text": {"content": text}}]
-        },
+        "bulleted_list_item": {"rich_text": [{"type": "text", "text": {"content": text}}]},
     }
 
 
@@ -180,9 +178,7 @@ def make_numbered_item(text: str) -> dict[str, Any]:
     return {
         "object": "block",
         "type": "numbered_list_item",
-        "numbered_list_item": {
-            "rich_text": [{"type": "text", "text": {"content": text}}]
-        },
+        "numbered_list_item": {"rich_text": [{"type": "text", "text": {"content": text}}]},
     }
 
 
@@ -210,9 +206,7 @@ def make_code(code: str, language: str = "plain text") -> dict[str, Any]:
     }
 
 
-async def get_block_tree(
-    token: str, block_id: str, *, max_depth: int = 3
-) -> dict[str, Any]:
+async def get_block_tree(token: str, block_id: str, *, max_depth: int = 3) -> dict[str, Any]:
     """Recursively fetch a block and all its nested children up to max_depth.
 
     Args:

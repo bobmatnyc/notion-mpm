@@ -2,7 +2,13 @@
 
 from __future__ import annotations
 
-from notion_mpm.api.blocks import make_bulleted_item, make_code, make_heading, make_paragraph, make_todo
+from notion_mpm.api.blocks import (
+    make_bulleted_item,
+    make_code,
+    make_heading,
+    make_paragraph,
+    make_todo,
+)
 
 
 def test_make_paragraph_default() -> None:
@@ -36,6 +42,7 @@ def test_make_heading_h3() -> None:
 
 def test_make_heading_invalid_level() -> None:
     import pytest
+
     with pytest.raises(ValueError, match="level must be 1, 2, or 3"):
         make_heading("Bad", level=4)
 

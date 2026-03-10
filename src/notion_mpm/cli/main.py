@@ -51,9 +51,7 @@ def setup() -> None:
             if result.owner_type:
                 click.echo(f"  Owner type: {result.owner_type}")
         else:
-            click.echo(
-                click.style(f"Token: INVALID ({result.status.value})", fg="red")
-            )
+            click.echo(click.style(f"Token: INVALID ({result.status.value})", fg="red"))
             click.echo()
             click.echo("Make sure your integration token is correct and has not expired.")
             click.echo("Verify at: https://www.notion.so/my-integrations")
@@ -63,9 +61,7 @@ def setup() -> None:
 
     click.echo()
     click.echo(
-        click.style(
-            "Setup complete! Run 'notion-mpm mcp' to start the MCP server.", fg="green"
-        )
+        click.style("Setup complete! Run 'notion-mpm mcp' to start the MCP server.", fg="green")
     )
 
 
@@ -156,14 +152,13 @@ def mcp_server() -> None:
     """Start the Notion MCP server in stdio mode for use with Claude Desktop."""
     import anyio
 
+    from notion_mpm.container import create_container
     from notion_mpm.server.notion_mcp_server import NotionMCPServer
 
-    server = NotionMCPServer()
+    container = create_container()
+    server = NotionMCPServer(container.service)
 
-    async def _run() -> None:
-        await server.run()
-
-    anyio.run(_run)
+    anyio.run(server.run, container)
 
 
 def _mask_token(token: str) -> str:
